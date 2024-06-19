@@ -4,8 +4,13 @@ class RegexNode {
     derive(char) {
         return NeverMatches;
     }
+    matchEnd() { return false; }
+    canMatchMore() { return !this.matchEnd(); }
 }
-const EmptyString = new RegexNode();
+class _EmptyString extends RegexNode {
+    matchEnd() { return true; }
+}
+const EmptyString = new _EmptyString();
 const NeverMatches = new RegexNode();
 
 // derivative of node is the next one if char matches otherwise no match
@@ -40,13 +45,15 @@ class AlternationNode extends RegexNode {
         } else {
             this.alternatives = _alternatives;
         }
-        return this;
+        return this;AlternationNode
     }
 
     derive(char) {
         return new AlternationNode(this.alternatives.map((alt) => alt.derive(char)));
 
     }
+    matchEnd() { return this.alternatives.some((alt) => alt.matchEnd()); }
+    canMatchMore() { return this.alternatives.some((alt) => alt.canMatchMore()); }
 }
 
 // Function to log the instance returned by head
@@ -73,10 +80,10 @@ let commonTail = new CharacterNode('d', EmptyString),
     ]),
     head = new CharacterNode('a', alternation);
 
-logInstance(head.derive('a')); //=> the AlternationNode in the middle
-logInstance(head.derive('a').derive('b')); //=> the CharacterNode 'd'
-logInstance(head.derive('a').derive('e')); //=> NeverMatches
-logInstance(head.derive('a').derive('b').derive('d')); //=> EmptyString; match complete
+// logInstance(head.derive('a')); //=> the AlternationNode in the middle
+// logInstance(head.derive('a').derive('b')); //=> the CharacterNode 'd'
+// logInstance(head.derive('a').derive('e')); //=> NeverMatches
+// logInstance(head.derive('a').derive('b').derive('d')); //=> EmptyString; match complete
 
 class AnyCharacterNode extends RegexNode {
     constructor (next) {
@@ -101,6 +108,8 @@ class RepetitionNode extends RegexNode {
             this.next.derive(char),
         ]);
     }
+    matchEnd(){ return this.next.matchEnd(); }
+    canMatchMore(){ return true; }
 }
 
 
@@ -112,11 +121,11 @@ let tail = new CharacterNode('d', EmptyString),
 // this is the side-effectual part I mentioned which sets up the cycle
 repetition.head = repetitionBody;
 
-logInstance(repetition.derive('a')); //=> the CharacterNode b
-logInstance(repetition.derive('d')); //=> EmptyString; match complete
-let repeatedOnce = repetition.derive('a').derive('b').derive('c'); // => the same RepetitionNode again
-logInstance(repeatedOnce.derive('a')) // => back to b
-logInstance(repeatedOnce.derive('d')) // => EmptyString again
+// logInstance(repetition.derive('a')); //=> the CharacterNode b
+// logInstance(repetition.derive('d')); //=> EmptyString; match complete
+// let repeatedOnce = repetition.derive('a').derive('b').derive('c'); // => the same RepetitionNode again
+// logInstance(repeatedOnce.derive('a')) // => back to b
+// logInstance(repeatedOnce.derive('d')) // => EmptyString again
 
 // Core regex functionality is writen, lets build to a better interface
 // Datatypes, fuctions, objects
@@ -144,7 +153,8 @@ function ZeroOrMore(repeatable) {
 
 const Any = Symbol('Any');
 
-// Compiler
+// Compilers
+// turn string in linked char list
 function compileString(str, tail=EmptyString) {
     let reversedStr = Array.from(str).reverse();
     for (let char of reversedStr) {
@@ -152,9 +162,85 @@ function compileString(str, tail=EmptyString) {
     }
     return tail;
 }
+
 function compileArray(arr, tail=EmptyString) {
     for (let expr of arr.reverse()) {
         tail = compile(expr, tail);
     }
     return tail;
 }
+
+function compileOr(or, tail=EmptyString) {
+    return new AlternationNode(or.alternatives.map((alternative) => compile(alternative, tail)));
+}
+
+
+// Handle circular link by linking the content as the repetition head after the contents are compiled
+function compileZeroOrMore(zeroOrMore, tail=EmptyString) {
+    let repetition = new RepetitionNode(tail),
+        contents = compile(zeroOrMore.repeatable, repetition);
+    repetition.head = contents;
+    return repetition;
+}
+
+function compileAny(tail=EmptyString) {
+    return new AnyCharacterNode(tail);
+}
+
+
+function compile(expr, tail=EmptyString) {
+    if ((typeof expr) === 'string') {
+        return compileString(expr, tail);
+    } else if (expr instanceof Array) {
+        return compileArray(expr, tail);
+    } else if (expr instanceof _Or) {
+        return compileOr(expr, tail);
+    } else if (expr instanceof _ZeroOrMore) {
+        return compileZeroOrMore(expr, tail);
+    } else if (expr === Any) {
+        return compileAny(tail);
+    } else {
+        throw new TypeError("tried to compile something that's not a valid regexp datum");
+    }
+}
+
+
+class RE {
+    constructor (regexp) {
+        this.start = compile(regexp);
+    }
+
+    match (str) {
+        let state = this.start,
+            chars = Array.from(str);
+        if ((chars.length === 0) && (state === EmptyString)) { return true; }
+        for (let i = 0; i < chars.length; i++) {
+            let char = chars[i];
+            state = state.derive(char);
+            if ((state.matchEnd()) && (i === (chars.length - 1))) {
+                // both regex and char finished => match
+                return true;
+            } else if (state.matchEnd() && !state.canMatchMore()) {
+                // regex finished but still chars left => no match
+                return false;
+            }
+        }
+        // char's finished but regex isnt => no match
+        return false;
+    }
+}
+
+
+// Example of usage
+console.log(new RE(ZeroOrMore('abc')).match('abcabc')); //=> true
+console.log(new RE([ZeroOrMore("abc"), "d"]).match("d")); //=> true
+console.log(new RE(["a", Or(["a", "b"]), "d"]).match("abd")); //=> true
+console.log(new RE(["a", Or(["a", "b"]), "d"]).match("aed")); //=> false
+
+// because we're dealing with normal JS objects we can even define impromptu character classes ...
+let Digit = Or(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']),
+    usPhoneNumber = new RE([Or([['(', Digit, Digit, Digit, ') '], '']), Digit, Digit, Digit, '-', Digit, Digit, Digit, Digit]);;
+
+console.log(usPhoneNumber.match('(415) 555-1212')); //=> true
+console.log(usPhoneNumber.match('555-1212')); //=> true
+console.log(usPhoneNumber.match('squirrel')); //=> false
